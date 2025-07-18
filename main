@@ -1,0 +1,390 @@
+#include <RGBmatrixPanel.h>
+
+int xLedSize = 32; // Declare the x Size of the LED Matrix
+int yLedSize = 16; // Declare the y Size of the LED Matrix
+int yBorderSize = yLedSize;
+
+int clkPin = 11; // Declare the CLOCK pin number
+int oePin = 13; // Declare the OE pin number
+int latPin = A2; // Declare the LAT pin number
+int aPin = A5; // Declare the A analog pin
+int bPin = A3; // Declare the B analog pin
+int cPin = A4; // Declare the C analog pin
+
+int vrxPin = A0; // Declare the analog pin connected to the VRX pin on the joystick
+int vryPin = A1; // Declare the analog pin connected to the VRY pin on the joystick
+
+int LEFT_THRESHOLD = 400;
+int RIGHT_THRESHOLD = 800;
+int UP_THRESHOLD = 400;
+int DOWN_THRESHOLD = 800;
+int COMMAND_NO = 0x00;
+int COMMAND_LEFT = 0x01;
+int COMMAND_RIGHT = 0x02;
+int COMMAND_UP = 0x04;
+int COMMAND_DOWN = 0x08;
+
+int command = COMMAND_NO;
+
+int buttonPin = 9; // Declare the button pin number
+int buttonValue = 0; // Declare the value that holds whether the button is pushed or not
+int buttonDebounce = false;
+
+unsigned long startMillis = millis();
+unsigned long currentMillis;
+
+int xValue = 0; // To store value of the X axis of the joystick
+int yValue = 0; // To store value of the Y axis of the joystick
+int characterX = xLedSize / 2; // Declare the players X position
+int characterY = yLedSize / 2; // Declare the players Y position
+
+int lazerX = 0;
+int lazerY = 0;
+int lazerYSize = 0;
+
+int lazerTravelTime = 100;
+int lazerEndPoint = 0;
+
+int xTarget;
+int yTarget;
+
+int xTargetSize = 2;
+int yTargetSize = 2;
+
+int targetColors[3] = {};
+
+RGBmatrixPanel matrix(aPin, bPin, cPin, clkPin, latPin, oePin, false);
+
+String gameState = "begin";
+int playerColors[3] = {}; // Create an array to hold the three colors the player wants to be their main color. The three slots represent R, G, B
+String playerName; // Hold the player's inputted username
+int serialPrinted = false; // Declare the value that tells the code if a certain part of code is done printing
+int serialPrintSteps = 0; // Declare the value that tells the code which part of printing text it is on
+int inputFinished = false; // Declare the value that tells the code if there are no more inputs required by the player
+int needNumberInput = false; // Declare the value that controls whether a number or string is read from the serial monitor
+int inputValid = false; // Declare the value that tells the code if an input fits the criteria needed
+
+int monitorStatus; // Declare the value that holds how many characters are inputted in the serial input
+String inputtedText; // Declare the value that will hold the serial input in String
+int integerInput; // Declare the value that will hold the numbers in the serial input
+
+int playerScore = 0; // Declare the value that holds the players score
+int randomColor = 0; // Declare the value that will provide a random colour
+
+int cannonCooldown = 10000;
+
+int enemyAttackStage = 1;
+
+void setup() {
+  Serial.begin(9600);
+  matrix.begin();
+  pinMode(buttonPin, INPUT); // Set the button pin to input mode
+}
+
+void loop() {
+  monitorStatus = Serial.available(); //
+  if (monitorStatus > 0) { // Check if there is an inputted value
+    if (needNumberInput == false) {
+      inputtedText = Serial.readString(); //
+    }
+    else {
+      integerInput = Serial.parseInt();
+    }
+  }
+  buttonValue = digitalRead(buttonPin);
+  if (gameState == "menu") {
+    matrix.drawPixel(characterX, characterY, matrix.Color333(playerColors[0], playerColors[1], playerColors[2]));
+    if (inputtedText == "Start") {
+      Serial.print("You have left ");
+      Serial.print(gameState);
+      Serial.println(" mode");
+      yBorderSize = yBorderSize / 4;
+      characterX = xLedSize / 2;
+      characterY = yBorderSize / 2;
+      gameState = "battling";
+      Serial.println(gameState);
+      // Could add battle cutscene here
+    }
+    fireShot();
+    characterMovement();
+  }
+  else if (gameState == "battling") { // When the game state is set to battling // NOT WORK
+    if (inputtedText == "Exit") {
+      yBorderSize = yBorderSize * 2;
+      Serial.print("You have left ");
+      Serial.print(gameState);
+      Serial.println(" mode");
+      Serial.println("What colour do you want your character to be?");
+      Serial.print("You have a score of: ");
+      Serial.println(playerScore);
+      gameState = "menu";
+
+    }
+    fireShot();
+    enemyAttack();
+    characterMovement();
+
+  }
+  else if (gameState == "begin") {
+    if (inputFinished == false) {
+      requireSerialInput();
+    }
+    else {
+      gameState = "menu";
+      matrix.fillScreen(matrix.Color333(0, 0, 0)); // Turn off all LEDs on the Matrix
+    }
+  }
+}
+
+void characterVisual(int movementDirection) { // Create a function that moves the character based on the players joystick input
+  matrix.drawPixel(characterX, characterY, matrix.Color333(0, 0, 0)); // Turn off the light position that holds the previous location before movement of the character
+  if (movementDirection == 2) {
+    characterY += 1;
+  }
+  if (movementDirection == 1) {
+    characterY -= 1;
+  }
+  if (movementDirection == 3) {
+    characterX += 1;
+  }
+  if (movementDirection == 4) {
+    characterX -= 1;
+  }
+  // Borders
+  if (characterX < 0) {
+    characterX = 0;
+  }
+  else if (characterX > xLedSize - 1) {
+    characterX = xLedSize - 1;
+  }
+  if (characterY < 0) {
+    characterY = 0;
+  }
+  else if (characterY > yBorderSize - 1) {
+    characterY = yLedSize - 1;
+  }
+  matrix.drawPixel(characterX, characterY, matrix.Color333(playerColors[0], playerColors[1], playerColors[2]));
+}
+
+void characterMovement() {
+
+  if (cooldownPeriod(500) == true) {
+
+    xValue = analogRead(vrxPin);
+    yValue = analogRead(vryPin);
+
+    command = COMMAND_NO;
+
+    if (xValue < LEFT_THRESHOLD)
+      command = command | COMMAND_LEFT;
+    else if (xValue > RIGHT_THRESHOLD)
+      command = command | COMMAND_RIGHT;
+
+    // check up/down commands
+    if (yValue < UP_THRESHOLD)
+      command = command | COMMAND_UP;
+    else if (yValue > DOWN_THRESHOLD)
+      command = command | COMMAND_DOWN;
+
+    // NOTE: AT A TIME, THERE MAY BE NO COMMAND, ONE COMMAND OR TWO COMMANDS
+
+    // print command to serial and process command
+    if (command & COMMAND_LEFT) {
+      characterVisual(1);
+    }
+
+    if (command & COMMAND_RIGHT) {
+      characterVisual(2);
+    }
+
+    if (command & COMMAND_UP) {
+      characterVisual(3);
+    }
+
+    if (command & COMMAND_DOWN) {
+      characterVisual(4);
+    }
+  }
+}
+
+void fireShot() {
+  if (buttonValue == HIGH) {
+    if (buttonDebounce == false) {
+      buttonDebounce = true;
+      lazerX = characterX;
+      lazerY = characterY;
+      lazerEndPoint = characterY * -1;
+    }
+  }
+  if (buttonDebounce == true) {
+    matrix.drawRect(lazerX, lazerY, 1, lazerYSize, matrix.Color333(playerColors[0], playerColors[1], playerColors[2]));
+    if (cooldownPeriod(lazerTravelTime) == true) {
+      lazerYSize -= 1;
+      if (lazerYSize <= lazerEndPoint) {
+        matrix.drawRect(lazerX, lazerY - 1, 1, lazerYSize, matrix.Color333(0, 0, 0));
+        lazerYSize = 0;
+        buttonDebounce = false;
+      }
+    }
+  }
+}
+
+int targetFound = false;
+
+// Never got to test this code
+void enemyAttack() { // Create a function that displays 2 "Cannons" and a target on the LED Matrix
+  Serial.print("Attacking in Stage ");
+  Serial.println(enemyAttackStage);
+  if (targetFound == false){
+    targetFound = true;
+    randomTarget();
+  }
+  // The target will have 3 stages, Green, Blue, Red and at red the cannon fires at the targeted spot
+  if (enemyAttackStage == 1) { // Check if the enemies attack stage is 1
+    randomTarget(); // Call a function that assigns random numbers to the X and Y value of the target
+    targetColors[0] = 0; // Set the targetColors element 1 to 0
+    targetColors[1] = 7; // Set the targetColors element 2 to 7
+    targetColors[2] = 0; // Set the targetColors element 3 to 0
+  }
+  else if (enemyAttackStage == 2) { // Check if the enemies attack stage is 2
+    targetColors[0] = 0; // Set the targetColors element 1 to 0
+    targetColors[1] = 0; // Set the targetColors element 2 to 0
+    targetColors[2] = 7; // Set the targetColors element 3 to 7
+  }
+  else if (enemyAttackStage == 3) { // Check if the enemies attack stage is 3
+    targetColors[0] = 7; // Set the targetColors element 1 to 7
+    targetColors[1] = 0; // Set the targetColors element 2 to 0
+    targetColors[2] = 0; // Set the targetColors element 3 to 0
+    // This is where the actual "Effect" of the attack would be coded
+    enemyAttackStage = 1; // Set the enemies attack stage to 1
+    targetFound = false;
+  }
+
+  matrix.drawRect(0, 0, xTargetSize, yTargetSize, matrix.Color333(targetColors[0], targetColors[1], targetColors[2])); // Draw on the LED Matrix a rectangle using the targets X and Y size and the targets current colours. The position of this is in the top left corner. It is a cannon
+  matrix.drawRect(xLedSize - xTargetSize, 0, xTargetSize, yTargetSize, matrix.Color333(targetColors[0], targetColors[1], targetColors[2])); // Draw on the LED Matrix a rectangle using the targets X and Y size and the targets current colours. The position of this is in the top right corner. It is a cannon
+  matrix.drawRect(xTarget, yTarget, xTargetSize, yTargetSize, matrix.Color333(targetColors[0], targetColors[1], targetColors[2])); // Draw on the LED Matrix a rectangle using the targets X and Y size and the targets current colours. The position of this is random based on the random X and Y target positions. This is the actual target
+  if (cooldownPeriod(cannonCooldown) == true) { // Check if cannonCooldown amount of time has passed since the last time it ran
+    enemyAttackStage += 1; // Add 1 to the enemies attack stage. This means it is moving onto the next stage
+  }
+}
+
+void randomTarget() { // Create a function that assigns a random value to the X and Y value of the target
+  xTarget = random(0, xLedSize); // Set the targets X position to a random value between 0 and the X size of the Matrix
+  yTarget = random(yBorderSize, yLedSize); // Set the targets X position to a random value between the players Y border and the Y size of the Matrix
+}
+
+int createRandomColor() {
+  randomColor = random(8); // Generate a random number between 0 and 7
+  return randomColor;
+}
+
+void requireSerialInput() {
+  if (serialPrinted == false) {
+    if (gameState == "begin") {
+      if (serialPrintSteps == 0) {
+        Serial.println("WELCOME TO LIGHT INVADERS");
+        Serial.println("What is your name?");
+        Serial.println(""); // Add a new line
+      }
+      else if (serialPrintSteps == 1) {
+        Serial.print("Welcome ");
+        Serial.print(playerName);
+        Serial.println(" To LIGHT INVADERs");
+        Serial.println("What colour do you want your character to be?");
+        Serial.println("Input your R colour code");
+        Serial.println(""); // Add a new line
+        needNumberInput = true;
+      }
+      else if (serialPrintSteps == 2) {
+        Serial.println("Input your G colour code");
+        Serial.println(""); // Add a new line
+      }
+      else if (serialPrintSteps == 3) {
+        Serial.println("Input your B colour code");
+        Serial.println(""); // Add a new line
+        needNumberInput = false;
+      }
+      else if (serialPrintSteps == 4) {
+        Serial.println(playerColors[0] + playerColors[1] + playerColors[2]); // doesnt work cant concatnate
+        Serial.println("");
+        Serial.println("Now that we are done the customizables");
+        Serial.println("Start the battle by typing in Start");
+        Serial.println("Or exit the battle by typing Exit");
+        Serial.println("The actual game only ever ends if you restart the Arduino.");
+        inputFinished = true;
+      }
+    }
+    serialPrinted = true;
+  }
+  else {
+    if (monitorStatus > 0) {
+      if (checkIfAnswerValid() == true) { // Check if the player has answered the questions if so run the code
+        serialPrinted = false; // Set serialPrinted to false
+        serialPrintSteps += 1; // Add 1 to serialPrintSteps
+      }
+    }
+  }
+  inputLedText("INPUT", 0);
+  inputLedText("REQ--", 2);
+}
+int cooldownPeriod(int delayTime) {
+  currentMillis = millis();
+  if (currentMillis - startMillis >= delayTime) {
+    startMillis = currentMillis;
+    return true;
+  }
+  return false;
+}
+
+int checkIfAnswerValid() {
+  if (gameState == "begin") {
+    if (serialPrintSteps == 0) {
+      if (inputtedText.length() == 5) {
+        playerName = inputtedText;
+        inputValid = true; // Return the function as true if the name inputted is valid
+      }
+      else {
+        Serial.println("Your name needs to be 5 characters long");
+      }
+    }
+    else if (serialPrintSteps > 0 || serialPrintSteps < 4) {
+      if (integerInput != 0) {
+        playerColors[serialPrintSteps - 1] = integerInput;
+        Serial.print("You inputted ");
+        Serial.println(integerInput);
+        inputValid = true;
+      }
+      else {
+        Serial.println("That was not a number");
+      }
+    }
+  }
+  if (inputValid == true) {
+    inputValid = false;
+    return true;
+  }
+  else {
+    return false;
+  }
+}
+
+void inputLedText(String fiveLetterWord, int row) { // Displays a word on a certain row on the LED Matrix. The parameter fiveLetterWord holds what word is displayed and the row determines which row on the board it is displayed on
+
+  row = row * 4; // Calculate which row corrospondes to the certain row on the LED Matrix. Since the letter size is 8 letters tall each 4 LEDs creates a new row.
+
+  matrix.setCursor(1, row);  // Set the matrix cursor
+  matrix.setTextSize(1);   // Set the text size to
+
+  matrix.setTextColor(matrix.Color333(7, 0, 0));
+  matrix.print(fiveLetterWord[0]);
+  matrix.setTextColor(matrix.Color333(7, 4, 0));
+  matrix.print(fiveLetterWord[1]);
+  matrix.setTextColor(matrix.Color333(7, 7, 0));
+  matrix.print(fiveLetterWord[2]);
+  matrix.setTextColor(matrix.Color333(4, 7, 0));
+  matrix.print(fiveLetterWord[3]);
+  matrix.setTextColor(matrix.Color333(0, 7, 0));
+  matrix.print(fiveLetterWord[4]);
+
+}
+
